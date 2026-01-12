@@ -14,7 +14,7 @@ model:
 train:
   batch_size: 128
   epochs: 3
-  lr: 0.001
+  lr: 0.002
   weight_decay: 0.0
   grad_clip: 1.0
   log_every_steps: 200

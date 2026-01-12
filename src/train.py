@@ -14,6 +14,7 @@ Exigences minimales :
 import argparse
 import os
 import time
+import math
 
 import yaml
 import torch
@@ -29,6 +30,9 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    # stabilité (optionnel mais utile)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def get_device(device_cfg: str) -> torch.device:
@@ -41,6 +45,7 @@ def get_device(device_cfg: str) -> torch.device:
 
 
 def accuracy_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    # logits: (B,) ; labels: (B,)
     preds = (torch.sigmoid(logits) >= 0.5).long()
     return (preds == labels.long()).float().mean().item()
 
@@ -54,13 +59,17 @@ def evaluate(model, loader, device) -> tuple[float, float]:
     for batch in loader:
         input_ids = batch.input_ids.to(device)
         mask = batch.mask.to(device)
-        labels = batch.labels.to(device)
+        labels = batch.labels.to(device).view(-1)
 
-        logits = model(input_ids, mask)
+        logits = model(input_ids, mask).view(-1)
         loss = crit(logits, labels)
 
+        if not torch.isfinite(loss):
+            # on ignore le batch en eval aussi (rare)
+            continue
+
         bs = labels.size(0)
-        loss_sum += loss.item() * bs
+        loss_sum += float(loss.item()) * bs
         acc_sum += accuracy_from_logits(logits, labels) * bs
         n += bs
 
@@ -77,9 +86,9 @@ def sanity_check(model, loader, device, steps: int) -> None:
     for batch in loader:
         input_ids = batch.input_ids.to(device)
         mask = batch.mask.to(device)
-        labels = batch.labels.to(device)
+        labels = batch.labels.to(device).view(-1)
 
-        logits = model(input_ids, mask)
+        logits = model(input_ids, mask).view(-1)
         loss = crit(logits, labels)
         acc = accuracy_from_logits(logits, labels)
 
@@ -93,7 +102,6 @@ def sanity_check(model, loader, device, steps: int) -> None:
         print(f"[SANITY] Only {done} batches available (requested {steps}).")
 
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -104,7 +112,7 @@ def main():
     args = parser.parse_args()
 
     # ---- read config ----
-    with open(args.config, "r") as f:
+    with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     # ---- seed ----
@@ -134,7 +142,6 @@ def main():
 
     # ---- training settings ----
     train_cfg = config["train"]
-
     lr = float(train_cfg.get("lr", train_cfg.get("optimizer", {}).get("lr", 1e-3)))
     weight_decay = float(train_cfg.get("weight_decay", train_cfg.get("optimizer", {}).get("weight_decay", 0.0)))
     grad_clip = float(train_cfg.get("grad_clip", 0.0))
@@ -180,31 +187,51 @@ def main():
 
     for epoch in range(1, epochs + 1):
         model.train()
-        loss_sum, acc_sum, n = 0.0, 0.0, 0
+
+        # moyennes robustes
+        loss_sum = 0.0
+        acc_sum = 0.0
+        n = 0
+        skipped = 0
 
         for batch in train_loader:
             input_ids = batch.input_ids.to(device)
             mask = batch.mask.to(device)
-            labels = batch.labels.to(device)
+            labels = batch.labels.to(device).view(-1)
 
-            logits = model(input_ids, mask)
+            logits = model(input_ids, mask).view(-1)
             loss = crit(logits, labels)
 
-            optimizer.zero_grad()
+            # garde-fou NaN/Inf
+            if not torch.isfinite(loss):
+                skipped += 1
+                print(f"[WARN] Non-finite train loss at step={global_step}: {loss.item()}. Skipping batch.")
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                if max_steps is not None and global_step >= max_steps:
+                    break
+                continue
+
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
+
             if grad_clip and grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+
             optimizer.step()
 
             bs = labels.size(0)
-            loss_sum += loss.item() * bs
-            acc_sum += accuracy_from_logits(logits, labels) * bs
+            loss_sum += float(loss.item()) * bs
+            acc_sum += accuracy_from_logits(logits.detach(), labels) * bs
             n += bs
 
             global_step += 1
+
             if global_step % log_every_steps == 0:
-                writer.add_scalar("train/loss_step", loss_sum / max(1, n), global_step)
-                writer.add_scalar("train/acc_step", acc_sum / max(1, n), global_step)
+                train_loss_step = loss_sum / max(1, n)
+                train_acc_step = acc_sum / max(1, n)
+                writer.add_scalar("train/loss_step", train_loss_step, global_step)
+                writer.add_scalar("train/acc_step", train_acc_step, global_step)
 
             if max_steps is not None and global_step >= max_steps:
                 break
@@ -218,26 +245,31 @@ def main():
         writer.add_scalar("train/acc", train_acc, epoch)
         writer.add_scalar("val/loss", val_loss, epoch)
         writer.add_scalar("val/acc", val_acc, epoch)
+        writer.add_scalar("train/skipped_batches", skipped, epoch)
+
+        # print epoch summary (nan-proof)
+        train_loss_str = f"{train_loss:.4f}" if math.isfinite(train_loss) else "nan"
+        val_loss_str = f"{val_loss:.4f}" if math.isfinite(val_loss) else "nan"
 
         print(
             f"Epoch {epoch}/{epochs} | "
-            f"train loss {train_loss:.4f} acc {train_acc*100:.2f}% | "
-            f"val loss {val_loss:.4f} acc {val_acc*100:.2f}%"
+            f"train loss {train_loss_str} acc {train_acc*100:.2f}% | "
+            f"val loss {val_loss_str} acc {val_acc*100:.2f}%"
         )
 
-        # save best checkpoint (as required: artifacts/best.ckpt)
+        # save best checkpoint
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "config": config,
-                    "meta": meta,
-                    "best_val_acc": best_val_acc,
-                    "epoch": epoch,
-                },
-                best_path,
-            )
+            ckpt = {
+                "model_state": model.state_dict(),      # utilisé par ton train
+                "state_dict": model.state_dict(),       # compat evaluate.py
+                "config": config,
+                "meta": meta,
+                "best_val_acc": best_val_acc,
+                "epoch": epoch,
+                "global_step": global_step,
+            }
+            torch.save(ckpt, best_path)
             print(f"✓ Saved best -> {best_path} (val_acc={best_val_acc*100:.2f}%)")
 
         if max_steps is not None and global_step >= max_steps:
