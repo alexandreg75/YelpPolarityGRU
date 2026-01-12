@@ -77,9 +77,9 @@ class YelpTorchDataset(Dataset):
         text = item["text"]
         label = int(item["label"])
 
-        # sécurité si label est {1,2} au lieu de {0,1}
-        if label in (1, 2):
-            label = label - 1
+        # Sur HuggingFace yelp_polarity: labels ∈ {0,1}
+        if label not in (0, 1):
+            raise ValueError(f"Unexpected label value: {label}")
 
         tokens = self.preprocess(text)
         ids = self.vocab.encode(tokens)[: self.max_len]
@@ -164,11 +164,11 @@ def get_dataloaders(config: dict):
         )
         overfit_n = max(1, min(overfit_n, len(train_ds)))
 
-        # overfit train: échantillonnage aléatoire (évite gros biais de labels)
+        # overfit train: échantillonnage aléatoire
         train_idx = torch.randperm(len(train_ds))[:overfit_n].tolist()
         train_ds = Subset(train_ds, train_idx)
 
-        # overfit val: échantillonnage aléatoire aussi
+        # overfit val: échantillonnage aléatoire aussi (petit mais pas biaisé)
         k = min(len(val_ds), max(256, overfit_n))
         val_idx = torch.randperm(len(val_ds))[:k].tolist()
         val_ds = Subset(val_ds, val_idx)
