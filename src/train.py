@@ -68,12 +68,13 @@ def evaluate(model, loader, device) -> tuple[float, float]:
 
 
 def sanity_check(model, loader, device, steps: int) -> None:
-    """Vérifie que la loss/acc sont cohérentes sur quelques mini-batches."""
+    """Vérifie que la loss/acc sont cohérentes sur quelques mini-batches.
+    Robuste même si le DataLoader contient moins de 'steps' batches.
+    """
     model.train()
     crit = nn.BCEWithLogitsLoss()
-    it = iter(loader)
-    for s in range(steps):
-        batch = next(it)
+    done = 0
+    for batch in loader:
         input_ids = batch.input_ids.to(device)
         mask = batch.mask.to(device)
         labels = batch.labels.to(device)
@@ -81,7 +82,16 @@ def sanity_check(model, loader, device, steps: int) -> None:
         logits = model(input_ids, mask)
         loss = crit(logits, labels)
         acc = accuracy_from_logits(logits, labels)
-        print(f"[SANITY] step {s+1}/{steps} | loss={loss.item():.4f} | acc={acc*100:.2f}%")
+
+        done += 1
+        print(f"[SANITY] step {done}/{steps} | loss={loss.item():.4f} | acc={acc*100:.2f}%")
+
+        if done >= steps:
+            break
+
+    if done < steps:
+        print(f"[SANITY] Only {done} batches available (requested {steps}).")
+
 
 
 def main():
