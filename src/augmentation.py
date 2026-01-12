@@ -2,9 +2,9 @@
 Data augmentation
 
 Signature imposée :
-get_augmentation_transforms(config: dict) -> objet/transform callable (ou None)
+get_augmentation_transforms(config: dict) -> callable (ou None)
 """
 
 def get_augmentation_transforms(config: dict):
-    """Retourne les transformations d'augmentation. À implémenter."""
-    raise NotImplementedError("get_augmentation_transforms doit être implémentée par l'étudiant·e.")
+    # Pour ce projet NLP, on ne fait pas d'augmentation (baseline propre).
+    return None

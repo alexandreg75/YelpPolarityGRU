@@ -1,7 +1,8 @@
 """
 Chargement des données – Yelp Polarity (robuste).
 
-Split stratifié MANUEL (fix définitif labels=0 uniquement).
+Signature imposée :
+get_dataloaders(config: dict) -> (train_loader, val_loader, test_loader, meta: dict)
 """
 
 import random
@@ -10,9 +11,10 @@ from typing import List, Tuple, Dict
 from collections import Counter
 
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 
 from datasets import load_dataset
+
 from src.preprocessing import get_preprocess_transforms
 
 
@@ -23,7 +25,7 @@ class Vocab:
     PAD = "<pad>"
     UNK = "<unk>"
 
-    def __init__(self, counter: Counter, max_size=50000, min_freq=2):
+    def __init__(self, counter: Counter, max_size: int = 50000, min_freq: int = 2):
         specials = [self.PAD, self.UNK]
         words = [w for w, c in counter.most_common() if c >= min_freq]
         words = words[: max(0, max_size - len(specials))]
@@ -32,23 +34,26 @@ class Vocab:
         self.pad_idx = self.stoi[self.PAD]
         self.unk_idx = self.stoi[self.UNK]
 
+    def __len__(self):
+        return len(self.itos)
+
     def encode(self, tokens: List[str]) -> List[int]:
         return [self.stoi.get(t, self.unk_idx) for t in tokens]
 
 
-def build_vocab(train_ds, preprocess, vocab_samples, vocab_size, min_freq):
+def build_vocab_from_hf(hf_train, preprocess, vocab_samples: int, vocab_size: int, min_freq: int) -> Vocab:
+    n = min(len(hf_train), vocab_samples)
     counter = Counter()
-    n = min(len(train_ds), vocab_samples)
     for i in range(n):
-        counter.update(preprocess(train_ds[i]["text"]))
-    return Vocab(counter, vocab_size, min_freq)
+        counter.update(preprocess(hf_train[i]["text"]))
+    return Vocab(counter, max_size=vocab_size, min_freq=min_freq)
 
 
 # =========================
-# Dataset Torch
+# Dataset Torch (wrap HF Dataset)
 # =========================
 class YelpTorchDataset(Dataset):
-    def __init__(self, hf_ds, preprocess, vocab, max_len):
+    def __init__(self, hf_ds, preprocess, vocab: Vocab, max_len: int):
         self.ds = hf_ds
         self.preprocess = preprocess
         self.vocab = vocab
@@ -57,16 +62,18 @@ class YelpTorchDataset(Dataset):
     def __len__(self):
         return len(self.ds)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         item = self.ds[idx]
         tokens = self.preprocess(item["text"])
         ids = self.vocab.encode(tokens)[: self.max_len]
         label = int(item["label"])
-        return torch.tensor(ids), torch.tensor(label, dtype=torch.float32)
+        if label not in (0, 1):
+            raise ValueError(f"Unexpected label value: {label}")
+        return torch.tensor(ids, dtype=torch.long), torch.tensor(label, dtype=torch.float32)
 
 
 # =========================
-# Batch
+# Batch + collate
 # =========================
 @dataclass
 class Batch:
@@ -75,9 +82,10 @@ class Batch:
     labels: torch.Tensor
 
 
-def collate_fn(batch, pad_idx, max_len):
+def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_idx: int, max_len: int) -> Batch:
     seqs, labels = zip(*batch)
-    B, T = len(seqs), max_len
+    B = len(seqs)
+    T = max_len
     x = torch.full((B, T), pad_idx, dtype=torch.long)
     mask = torch.zeros((B, T), dtype=torch.bool)
 
@@ -86,72 +94,92 @@ def collate_fn(batch, pad_idx, max_len):
         x[i, : len(s)] = s
         mask[i, : len(s)] = True
 
-    return Batch(x, mask, torch.stack(labels))
+    return Batch(input_ids=x, mask=mask, labels=torch.stack(labels))
 
 
 # =========================
 # DataLoaders
 # =========================
 def get_dataloaders(config: dict):
-
-    seed = config.get("seed", 42)
+    seed = int(config.get("seed", config.get("train", {}).get("seed", 42)))
     random.seed(seed)
     torch.manual_seed(seed)
 
     ds_cfg = config["dataset"]
-    train_cfg = config["train"]
+    train_cfg = config.get("train", {})
+
+    max_len = int(ds_cfg.get("max_len", 256))
+    vocab_size = int(ds_cfg.get("vocab_size", 50000))
+    min_freq = int(ds_cfg.get("min_freq", 2))
+    vocab_samples = int(ds_cfg.get("vocab_samples", 200000))
+    val_ratio = float(ds_cfg.get("val_ratio", 0.05))
+
+    batch_size = int(train_cfg.get("batch_size", 128))
+    num_workers = int(ds_cfg.get("num_workers", 2))
 
     preprocess = get_preprocess_transforms(config)
 
-    max_len = ds_cfg["max_len"]
-    batch_size = train_cfg["batch_size"]
-    vocab_size = ds_cfg["vocab_size"]
-    min_freq = ds_cfg["min_freq"]
-    vocab_samples = ds_cfg["vocab_samples"]
-
-    # ---- Load HF dataset ONCE ----
+    # ---- Load once ----
     hf = load_dataset("yelp_polarity")
-    hf_train = hf["train"]
+    hf_train_full = hf["train"]
     hf_test = hf["test"]
 
-    # ---- MANUAL stratified split ----
-    idx_pos = [i for i in range(len(hf_train)) if hf_train[i]["label"] == 1]
-    idx_neg = [i for i in range(len(hf_train)) if hf_train[i]["label"] == 0]
+    # ---- Stratified split MANUAL using label column (robuste) ----
+    labels = hf_train_full["label"]  # list[int] of 0/1
 
-    random.shuffle(idx_pos)
-    random.shuffle(idx_neg)
+    idx_pos = [i for i, y in enumerate(labels) if y == 1]
+    idx_neg = [i for i, y in enumerate(labels) if y == 0]
 
-    val_ratio = 0.05
+    rng = random.Random(seed)
+    rng.shuffle(idx_pos)
+    rng.shuffle(idx_neg)
+
     n_val_pos = int(len(idx_pos) * val_ratio)
     n_val_neg = int(len(idx_neg) * val_ratio)
 
     val_idx = idx_pos[:n_val_pos] + idx_neg[:n_val_neg]
     train_idx = idx_pos[n_val_pos:] + idx_neg[n_val_neg:]
 
-    random.shuffle(train_idx)
-    random.shuffle(val_idx)
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
 
-    hf_train_split = Subset(hf_train, train_idx)
-    hf_val_split = Subset(hf_train, val_idx)
+    # HF-native selection (important)
+    hf_train = hf_train_full.select(train_idx)
+    hf_val = hf_train_full.select(val_idx)
 
-    # ---- vocab ----
-    vocab = build_vocab(hf_train_split, preprocess, vocab_samples, vocab_size, min_freq)
+    # ---- vocab from TRAIN split only ----
+    vocab = build_vocab_from_hf(hf_train, preprocess, vocab_samples, vocab_size, min_freq)
 
-    train_ds = YelpTorchDataset(hf_train_split, preprocess, vocab, max_len)
-    val_ds = YelpTorchDataset(hf_val_split, preprocess, vocab, max_len)
-    test_ds = YelpTorchDataset(hf_test, preprocess, vocab, max_len)
+    train_ds = YelpTorchDataset(hf_train, preprocess, vocab, max_len=max_len)
+    val_ds = YelpTorchDataset(hf_val, preprocess, vocab, max_len=max_len)
+    test_ds = YelpTorchDataset(hf_test, preprocess, vocab, max_len=max_len)
 
-    coll = lambda b: collate_fn(b, vocab.pad_idx, max_len)
+    # ---- Overfit small (optional) ----
+    if bool(train_cfg.get("overfit_small", False)):
+        overfit_n = int(train_cfg.get("overfit_num_examples", 256))
+        overfit_n = max(1, min(overfit_n, len(train_ds)))
 
-    train_loader = DataLoader(train_ds, batch_size, shuffle=True, collate_fn=coll)
-    val_loader = DataLoader(val_ds, batch_size, shuffle=False, collate_fn=coll)
-    test_loader = DataLoader(test_ds, batch_size, shuffle=False, collate_fn=coll)
+        # sample indices inside the train split
+        idx = torch.randperm(len(train_ds))[:overfit_n].tolist()
+        # easiest: wrap with a tiny subset dataset
+        train_ds = torch.utils.data.Subset(train_ds, idx)
 
-    meta = {
+        k = min(len(val_ds), max(256, overfit_n))
+        vidx = torch.randperm(len(val_ds))[:k].tolist()
+        val_ds = torch.utils.data.Subset(val_ds, vidx)
+
+    coll = lambda b: collate_fn(b, pad_idx=vocab.pad_idx, max_len=max_len)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=coll)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll)
+
+    meta: Dict = {
         "num_classes": 2,
         "input_shape": (max_len,),
-        "pad_idx": vocab.pad_idx,
         "vocab_size": len(vocab),
+        "pad_idx": vocab.pad_idx,
+        "max_len": max_len,
     }
 
     return train_loader, val_loader, test_loader, meta
