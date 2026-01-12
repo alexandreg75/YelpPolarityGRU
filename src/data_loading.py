@@ -156,11 +156,17 @@ def get_dataloaders(config: dict):
 
     # ---- overfit_small : limiter le dataset ----
     if bool(train_cfg.get("overfit_small", False)):
-        overfit_n = int(train_cfg.get("overfit_num_examples", ds_cfg.get("overfit_num_examples", 256)))
-        overfit_n = max(1, min(overfit_n, len(train_ds)))
-        train_ds = Subset(train_ds, list(range(overfit_n)))
-        # val réduit aussi pour accélérer
-        val_ds = Subset(val_ds, list(range(min(len(val_ds), max(64, overfit_n)))))
+    overfit_n = int(train_cfg.get("overfit_num_examples", ds_cfg.get("overfit_num_examples", 256)))
+    overfit_n = max(1, min(overfit_n, len(train_ds)))
+
+    # overfit: on force un petit train set
+    train_ds = Subset(train_ds, list(range(overfit_n)))
+
+    # val: si on veut réduire pour accélérer, on échantillonne au hasard (sinon biais énorme)
+    k = min(len(val_ds), max(256, overfit_n))
+    idx = torch.randperm(len(val_ds))[:k].tolist()
+    val_ds = Subset(val_ds, idx)
+
 
     # collate
     coll = lambda b: collate_fn(b, pad_idx=vocab.pad_idx, max_len=max_len)
