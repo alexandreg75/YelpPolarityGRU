@@ -1,74 +1,32 @@
-# Fichier de configuration générique (à adapter au projet)
+seed: 42
+
 dataset:
-  name: TODO                # ex: "CIFAR10", "IMDB", ...
-  root: "./data"            # chemin local pour les données
-  split:                    # optionnel : noms/tailles de splits
-    train: TODO
-    val: TODO
-    test: TODO
-  download: true            # si supporté
-  num_workers: 4
-  shuffle: true
-
-preprocess:
-  # transformations de base (ex: resize, normalize)
-  resize:                   # ex: [32, 32] ou null
-  normalize:                # ex: {"mean": [0.5,0.5,0.5], "std":[0.5,0.5,0.5]} ou null
-  text_tokenizer:           # pour NLP : nom ou paramètres, sinon null
-
-augment:
-  # data augmentation (laisser null si non utilisée)
-  random_flip:              # true/false
-  random_crop:              # paramètres ou null
-  color_jitter:             # paramètres ou null
-  spec_augment:             # pour audio : paramètres ou null
+  name: yelp_polarity
+  max_len: 256          # à tester: 128 / 256 / 400
+  vocab_size: 50000
+  min_freq: 2
+  vocab_samples: 200000
 
 model:
-  type: TODO                # ex: "resnet18", "mlp", "lstm", ...
-  num_classes: TODO
-  input_shape:              # ex: [3, 32, 32] ou null
-  hidden_sizes:             # ex: [256, 128] ou null
-  activation: relu          # ex: relu, gelu, tanh...
-  dropout: 0.0              # ex: 0.0–0.5
-  batch_norm: false         # true/false
-  residual: false           # true/false
-  attention: false          # true/false
-  rnn:                      # pour RNN/LSTM/GRU : paramètres ou null
-    type: null              # lstm/gru
-    hidden_size: null
-    num_layers: null
-    bidirectional: false
+  embed_dim: 200
+  hidden_size: 256      # à tester: 128 / 256 / 384
 
 train:
-  seed: 42
-  device: auto              # "cpu", "cuda", ou "auto"
-  batch_size: 64
-  epochs: 10
-  max_steps: null           # entier ou null
-  overfit_small: false      # true pour sur-apprendre sur un petit échantillon
+  batch_size: 128
+  epochs: 3
+  lr: 0.002
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every_steps: 200
 
-  optimizer:
-    name: adam              # sgd/adam/rmsprop
-    lr: 0.001
-    weight_decay: 0.0
-    momentum: 0.9           # utile si SGD
+  # Étape A: vérif perte initiale (sanity)
+  sanity_steps: 5
 
-  scheduler:
-    name: none              # none/step/cosine/onecycle
-    step_size: 10
-    gamma: 0.1
-    warmup_steps: 0
-
-metrics:
-  classification:           # ex: ["accuracy", "f1"]
-    - accuracy
-  regression: []            # ex: ["mae", "rmse"]
-
-hparams:                    # espace pour mini grid search
-  lr: [0.0005, 0.001, 0.005]
-  batch_size: [32, 64]
-  weight_decay: [0.0, 0.0005]
+  # Étape A: overfit mini-échantillon
+  overfit_num_examples: 256   # mets 0 pour désactiver
+  overfit_epochs: 20
 
 paths:
-  runs_dir: "./runs"
-  artifacts_dir: "./artifacts"
+  runs_dir: runs
+  artifacts_dir: artifacts
+  best_ckpt_path: artifacts/best.ckpt
