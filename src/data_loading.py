@@ -28,7 +28,8 @@ class Vocab:
     def __init__(self, counter: Counter, max_size: int = 50000, min_freq: int = 2):
         specials = [self.PAD, self.UNK]
         words = [w for w, c in counter.most_common() if c >= min_freq]
-        words = words[: max(0, max_size - len(specials))]
+        if max_size is not None:
+            words = words[: max(0, max_size - len(specials))]
         self.itos = specials + words
         self.stoi = {w: i for i, w in enumerate(self.itos)}
         self.pad_idx = self.stoi[self.PAD]
@@ -86,7 +87,8 @@ def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_idx: int, max
     seqs, labels = zip(*batch)
     B = len(seqs)
     T = max_len
-    x = torch.full((B, T), pad_idx, dtype=torch.long)
+
+    x = torch.full((B, T), fill_value=pad_idx, dtype=torch.long)
     mask = torch.zeros((B, T), dtype=torch.bool)
 
     for i, s in enumerate(seqs):
@@ -125,7 +127,7 @@ def get_dataloaders(config: dict):
     hf_test = hf["test"]
 
     # ---- Stratified split MANUAL using label column (robuste) ----
-    labels = hf_train_full["label"]  # list[int] of 0/1
+    labels = hf_train_full["label"]  # Column (list-like) of 0/1
 
     idx_pos = [i for i, y in enumerate(labels) if y == 1]
     idx_neg = [i for i, y in enumerate(labels) if y == 0]
@@ -137,13 +139,29 @@ def get_dataloaders(config: dict):
     n_val_pos = int(len(idx_pos) * val_ratio)
     n_val_neg = int(len(idx_neg) * val_ratio)
 
-    val_idx = idx_pos[:n_val_pos] + idx_neg[:n_val_neg]
-    train_idx = idx_pos[n_val_pos:] + idx_neg[n_val_neg:]
+    val_pos = idx_pos[:n_val_pos]
+    val_neg = idx_neg[:n_val_neg]
+    train_pos = idx_pos[n_val_pos:]
+    train_neg = idx_neg[n_val_neg:]
+
+    train_idx = train_pos + train_neg
+    val_idx = val_pos + val_neg
 
     rng.shuffle(train_idx)
     rng.shuffle(val_idx)
 
-    # HF-native selection (important)
+    # sanity check: train/val doivent contenir les 2 classes
+    def _check(indices, name):
+        ys = [labels[i] for i in indices[:20000]]
+        u = set(ys)
+        if u != {0, 1}:
+            raise RuntimeError(
+                f"[SPLIT ERROR] {name} split has labels {sorted(u)} (expected [0,1])."
+            )
+
+    _check(train_idx, "train")
+    _check(val_idx, "val")
+
     hf_train = hf_train_full.select(train_idx)
     hf_val = hf_train_full.select(val_idx)
 
@@ -159,9 +177,7 @@ def get_dataloaders(config: dict):
         overfit_n = int(train_cfg.get("overfit_num_examples", 256))
         overfit_n = max(1, min(overfit_n, len(train_ds)))
 
-        # sample indices inside the train split
         idx = torch.randperm(len(train_ds))[:overfit_n].tolist()
-        # easiest: wrap with a tiny subset dataset
         train_ds = torch.utils.data.Subset(train_ds, idx)
 
         k = min(len(val_ds), max(256, overfit_n))
@@ -170,9 +186,15 @@ def get_dataloaders(config: dict):
 
     coll = lambda b: collate_fn(b, pad_idx=vocab.pad_idx, max_len=max_len)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=coll)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=coll
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=coll
+    )
 
     meta: Dict = {
         "num_classes": 2,
