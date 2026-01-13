@@ -14,15 +14,21 @@ model:
 train:
   batch_size: 128
   epochs: 3
-  lr: 0.002
+
+  # Étape B: LR stable (0.002 explosait parfois)
+  lr: 0.001
+
   weight_decay: 0.0
   grad_clip: 1.0
   log_every_steps: 200
 
+  # sécurité anti-explosion (utilisé par train.py)
+  bad_loss_threshold: 50.0
+
   # Étape A: vérif perte initiale (sanity)
   sanity_steps: 5
 
-  # Étape A: overfit mini-échantillon
+  # Étape A: overfit mini-échantillon (gardé, mais tu n'actives que via --overfit_small)
   overfit_num_examples: 256   # mets 0 pour désactiver
   overfit_epochs: 20
 

@@ -30,7 +30,7 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # stabilité (optionnel mais utile)
+    # stabilité (optionnel)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -65,7 +65,6 @@ def evaluate(model, loader, device) -> tuple[float, float]:
         loss = crit(logits, labels)
 
         if not torch.isfinite(loss):
-            # on ignore le batch en eval aussi (rare)
             continue
 
         bs = labels.size(0)
@@ -185,10 +184,12 @@ def main():
     best_val_acc = -1.0
     global_step = 0
 
+    # seuil anti-explosion pour BCE (si dépasse, on skip)
+    bad_loss_threshold = float(train_cfg.get("bad_loss_threshold", 50.0))
+
     for epoch in range(1, epochs + 1):
         model.train()
 
-        # moyennes robustes
         loss_sum = 0.0
         acc_sum = 0.0
         n = 0
@@ -202,10 +203,10 @@ def main():
             logits = model(input_ids, mask).view(-1)
             loss = crit(logits, labels)
 
-            # garde-fou NaN/Inf
-            if not torch.isfinite(loss):
+            # skip NaN/Inf + skip loss énorme (explosion)
+            if (not torch.isfinite(loss)) or (float(loss.item()) > bad_loss_threshold):
                 skipped += 1
-                print(f"[WARN] Non-finite train loss at step={global_step}: {loss.item()}. Skipping batch.")
+                print(f"[WARN] Bad train loss at step={global_step}: {loss.item()}. Skipping batch.")
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
                 if max_steps is not None and global_step >= max_steps:
@@ -215,8 +216,19 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
 
+            grad_norm = None
             if grad_clip and grad_clip > 0:
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+
+            # si grad_norm est inf/nan : on skip l'update
+            if grad_norm is not None and (not torch.isfinite(torch.tensor(grad_norm))):
+                skipped += 1
+                print(f"[WARN] Non-finite grad_norm at step={global_step}: {grad_norm}. Skipping optimizer step.")
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                if max_steps is not None and global_step >= max_steps:
+                    break
+                continue
 
             optimizer.step()
 
@@ -247,7 +259,6 @@ def main():
         writer.add_scalar("val/acc", val_acc, epoch)
         writer.add_scalar("train/skipped_batches", skipped, epoch)
 
-        # print epoch summary (nan-proof)
         train_loss_str = f"{train_loss:.4f}" if math.isfinite(train_loss) else "nan"
         val_loss_str = f"{val_loss:.4f}" if math.isfinite(val_loss) else "nan"
 
@@ -261,8 +272,8 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             ckpt = {
-                "model_state": model.state_dict(),      # utilisé par ton train
-                "state_dict": model.state_dict(),       # compat evaluate.py
+                "model_state": model.state_dict(),
+                "state_dict": model.state_dict(),
                 "config": config,
                 "meta": meta,
                 "best_val_acc": best_val_acc,
