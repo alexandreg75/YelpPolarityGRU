@@ -10,10 +10,13 @@
 
 ## 0) Informations générales
 
-- **Étudiant·e** : _Nom, Prénom_
-- **Projet** : _Intitulé (dataset × modèle)_
-- **Dépôt Git** : _URL publique_
-- **Environnement** : `python == ...`, `torch == ...`, `cuda == ...`  
+- **Étudiant·e** : Galstian, Alexandre
+- **Projet** : Yelp Polarity (binary sentiment) × GRU + Global MaxPooling
+- **Dépôt Git** : https://github.com/alexandreg75/YelpPolarityGRU
+- **Environnement** : 
+local : python 3.12 + torch CPU (pour debug)
+
+cluster : python/torch + CUDA (pour run final)
 - **Commandes utilisées** :
   - Entraînement : `python -m src.train --config configs/config.yaml`
   - LR finder : `python -m src.lr_finder --config configs/config.yaml`
@@ -25,13 +28,23 @@
 ## 1) Données
 
 ### 1.1 Description du dataset
-- **Source** (lien) :
-- **Type d’entrée** (image / texte / audio / séries) :
-- **Tâche** (multiclasses, multi-label, régression) :
-- **Dimensions d’entrée attendues** (`meta["input_shape"]`) :
+- **Source** (lien) : https://huggingface.co/datasets/fancyzhx/yelp_polarity
+- **Type d’entrée** (image / texte / audio / séries) : texte en anglais
+- **Tâche** (multiclasses, multi-label, régression) : classification binaire sentiment (pos/neg)
+- **Dimensions d’entrée attendues** (`meta["input_shape"]`) : 
 - **Nombre de classes** (`meta["num_classes"]`) :
 
 **D1.** Quel dataset utilisez-vous ? D’où provient-il et quel est son format (dimensions, type d’entrée) ?
+
+J’utilise le dataset yelp_polarity disponible sur HuggingFace Datasets (fournisseur : fancyzhx). Il s’agit d’un dataset de classification binaire de sentiment sur des critiques Yelp en anglais : chaque exemple est une review annotée en positive ou negative. Le dataset provient à l’origine du Yelp Dataset Challenge 2015 et a été reformaté en benchmark de classification de texte.
+
+Le dataset est constitué de :
+
+- 560 000 exemples pour l’entraînement (train)
+- 38 000 exemples pour le test (test)
+
+Le format d’entrée est du texte brut (une chaîne de caractères "text") et une étiquette "label" de type entier binaire (0 ou 1).
+Après prétraitement, l’entrée du modèle devient une séquence d’indices représentant des mots du vocabulaire : la forme finale d’une entrée est donc un tenseur de taille (seq_len = max_len), et un batch a une forme (batch_size, max_len).
 
 ### 1.2 Splits et statistiques
 
@@ -41,23 +54,92 @@
 | Val   |           |                                                        |
 | Test  |           |                                                        |
 
-**D2.** Donnez la taille de chaque split et le nombre de classes.  
+**D2.** Donnez la taille de chaque split et le nombre de classes. 
+
+Le dataset utilisé est yelp_polarity, qui contient 2 classes (sentiment négatif vs positif, labels binaires 0 et 1).
+
+Les splits fournis par défaut par HuggingFace sont :
+
+- Train : 560 000 exemples
+- Test : 38 000 exemples
+
+En plus de ces splits, j’ai créé un split de validation à partir du train (voir D3 pour la méthode de séparation). Ainsi, l’entraînement utilise train + validation + test, avec un nombre total de classes égal à 2.
+
 **D3.** Si vous avez créé un split (ex. validation), expliquez **comment** (stratification, ratio, seed).
 
-**D4.** Donnez la **distribution des classes** (graphique ou tableau) et commentez en 2–3 lignes l’impact potentiel sur l’entraînement.  
+Le dataset yelp_polarity ne fournit initialement que deux splits : train et test. J’ai donc créé un split de validation à partir du split train afin de pouvoir choisir les hyperparamètres (LR, taille cachée, longueur max) sans utiliser le test pendant la phase de développement.
+
+La séparation a été effectuée de manière stratifiée, c’est-à-dire en conservant approximativement la même proportion de labels positifs/négatifs dans train et val (important pour éviter un biais de validation). Le ratio choisi est 95% pour l’entraînement et 5% pour la validation.
+
+Enfin, afin d’assurer la reproductibilité, la création du split utilise une seed fixée à 42 (dans config.yaml). Ainsi, les exemples envoyés dans train et val restent identiques d’un run à l’autre.
+
+**D4.** Donnez la **distribution des classes** (graphique ou tableau) et commentez en 2–3 lignes l’impact potentiel sur l’entraînement.
+
+La distribution des classes dans yelp_polarity est quasi équilibrée, avec environ autant de critiques positives que négatives.
+
+Classe	Label	#Exemples (train)	Proportion
+Négatif	0	~280 000	~50%
+Positif	1	~280 000	~50%
+
+Impact sur l’entraînement :
+Le dataset étant bien équilibré, la métrique accuracy est pertinente et ne masque pas un biais vers une classe majoritaire. Cela réduit aussi le risque que le modèle obtienne un score élevé “facilement” en prédisant toujours la même classe. On s’attend donc à une optimisation stable sans nécessiter de pondération de la loss ou de techniques spécifiques de rééquilibrage.
+
 **D5.** Mentionnez toute particularité détectée (tailles variées, longueurs variables, multi-labels, etc.).
+
+Le dataset yelp_polarity contient des reviews textuelles de longueur variable : certaines critiques sont très courtes (quelques mots), tandis que d’autres peuvent contenir plusieurs paragraphes. Cette variabilité impose l’utilisation d’un mécanisme de troncature et de padding pour pouvoir former des batches de taille fixe.
+
+Dans ce projet, j’utilise une longueur maximale max_len (ex. 128 ou 256). Les séquences plus longues sont tronquées, et les séquences plus courtes sont complétées par un token <pad>. Un masque (mask) est également construit pour indiquer quelles positions correspondent à du texte réel et lesquelles correspondent au padding.
+
+Enfin, il s’agit d’un problème de classification binaire classique : il n’y a pas de multi-label, pas de classes multiples et pas de données manquantes dans les champs essentiels (text et label).
 
 ### 1.3 Prétraitements (preprocessing) — _appliqués à train/val/test_
 
 Listez précisément les opérations et paramètres (valeurs **fixes**) :
 
-- Vision : resize = __, center-crop = __, normalize = (mean=__, std=__)…
-- Audio : resample = __ Hz, mel-spectrogram (n_mels=__, n_fft=__, hop_length=__), AmplitudeToDB…
-- NLP : tokenizer = __, vocab = __, max_length = __, padding/truncation = __…
-- Séries : normalisation par canal, fenêtrage = __…
+- NLP : 
 
-**D6.** Quels **prétraitements** avez-vous appliqués (opérations + **paramètres exacts**) et **pourquoi** ?  
+- Tokenizer : tokenisation simple au niveau mot (word-level), basée sur un découpage par espaces + suppression de ponctuation basique et passage en minuscules (lowercase).
+
+- Vocabulaire :
+    construit uniquement à partir du split train
+    taille maximale : vocab_size = 50 000
+    fréquence minimale d’un token : min_freq = 2
+    nombre d’exemples utilisés pour construire le vocab : vocab_samples = 50 000 (en local CPU) / 200 000 (pour le run final)
+    tokens spéciaux : <pad> et <unk>
+
+- Encodage : chaque review est convertie en une séquence d’indices (input_ids) de taille variable avant padding.
+
+- Longueur maximale :
+    max_len = 128 (grid search local CPU)
+    max_len = 256 (configuration finale run long)
+
+- Troncature : activée, les séquences au-delà de max_len sont tronquées.
+
+- Padding : activé, les séquences plus courtes sont complétées par <pad> jusqu’à la longueur max_len.
+
+- Masque : un masque booléen mask de taille (batch_size, max_len) est construit, avec :
+    mask[t] = 1 pour les tokens réels
+    mask[t] = 0 pour le padding
+
+**D6.** Quels **prétraitements** avez-vous appliqués (opérations + **paramètres exacts**) et **pourquoi** ? 
+
+J’ai appliqué un prétraitement NLP classique pour convertir le texte en entrées numériques utilisables par une GRU :
+
+- Tokenisation word-level (texte mis en minuscules).
+- Vocabulaire construit sur le split train avec :
+    vocab_size = 50 000
+    min_freq = 2
+    vocab_samples = 50 000 (tests CPU) / 200 000 (runs finaux)
+    tokens spéciaux <pad> et <unk>
+- Encodage en séquences d’indices, avec remplacement des mots inconnus par <unk>.
+- Troncature + padding à une longueur fixe max_len (ex. 128 ou 256), et création d’un mask pour ignorer le padding.
+
+Ces choix permettent d’obtenir des batchs de taille fixe, de contrôler la taille du vocabulaire (stabilité/temps), et de limiter le coût mémoire tout en gardant assez de contexte pour la classification de sentiment.
+
 **D7.** Les prétraitements diffèrent-ils entre train/val/test (ils ne devraient pas, sauf recadrage non aléatoire en val/test) ?
+
+Non. Les prétraitements sont identiques pour les splits train / validation / test : même tokenisation, même vocabulaire (construit uniquement à partir du train), et même règles de padding/troncature à max_len.
+Cela garantit que les performances mesurées sur val et test sont comparables et ne proviennent pas d’un traitement différent des données.
 
 ### 1.4 Augmentation de données — _train uniquement_
 
@@ -66,17 +148,29 @@ Listez précisément les opérations et paramètres (valeurs **fixes**) :
   - Audio : time/freq masking (taille, nb masques) …
   - Séries : jitter amplitude=__, scaling=__ …
 
-**D8.** Quelles **augmentations** avez-vous appliquées (paramètres précis) et **pourquoi** ?  
+**D8.** Quelles **augmentations** avez-vous appliquées (paramètres précis) et **pourquoi** ? 
+
+Je n’ai pas appliqué d’augmentation de données (augmentation désactivée / None).
+Sur une tâche de sentiment en texte, des augmentations naïves (suppression/ajout de mots, synonymes, bruit) peuvent facilement modifier le sens de la review et donc altérer le label. J’ai donc préféré conserver les textes originaux et me concentrer sur le réglage des hyperparamètres et la stabilité de l’entraînement.
+
 **D9.** Les augmentations **conservent-elles les labels** ? Justifiez pour chaque transformation retenue.
+
+Aucune augmentation n’ayant été appliquée, la question de conservation des labels ne se pose pas ici.
+Ce choix évite précisément le risque qu’une transformation de texte (ex. remplacement de mots, suppression de tokens) modifie le sens de la review et rende le label (positif/négatif) incorrect.
 
 ### 1.5 Sanity-checks
 
 - **Exemples** après preprocessing/augmentation (insérer 2–3 images/spectrogrammes) :
 
-> _Insérer ici 2–3 captures illustrant les données après transformation._
+![Image 1](./images/Image1.png)
 
-**D10.** Montrez 2–3 exemples et commentez brièvement.  
+**D10.** Montrez 2–3 exemples et commentez brièvement.
+
+Les exemples montrent des reviews de longueurs très variées : une séquence peut remplir toute la fenêtre (nonpad=256 → troncature), d’autres sont plus courtes (nonpad=41, nonpad=117) et sont paddées jusqu’à max_len. On observe aussi des tokens <unk>, ce qui est attendu lorsque certains mots n’appartiennent pas au vocabulaire limité (vocab_size). Cela confirme que le preprocessing (tokenisation, vocab, padding/troncature) fonctionne correctement.
+
 **D11.** Donnez la **forme exacte** d’un batch train (ex. `(batch, C, H, W)` ou `(batch, seq_len)`), et vérifiez la cohérence avec `meta["input_shape"]`.
+
+Un batch train contient input_ids et mask de forme (128, 256) et des labels de forme (128,), cohérent avec meta["input_shape"] = (256,).
 
 ---
 
@@ -85,39 +179,77 @@ Listez précisément les opérations et paramètres (valeurs **fixes**) :
 ### 2.1 Baselines
 
 **M0.**
-- **Classe majoritaire** — Métrique : `_____` → score = `_____`
-- **Prédiction aléatoire uniforme** — Métrique : `_____` → score = `_____`  
-_Commentez en 2 lignes ce que ces chiffres impliquent._
+- **Classe majoritaire** — Métrique : `accuracy` → score = `50%`
+- **Prédiction aléatoire uniforme** — Métrique : `accuracy` → score = `50%` 
+
+Le dataset étant globalement équilibré entre classes positives et négatives, une stratégie triviale (toujours prédire la même classe) ou un tirage aléatoire donne une accuracy proche de 0.5. Le modèle appris doit donc dépasser significativement ce niveau pour démontrer qu’il extrait réellement de l’information du texte.
 
 ### 2.2 Architecture implémentée
 
 - **Description couche par couche** (ordre exact, tailles, activations, normalisations, poolings, résiduels, etc.) :
-  - Input → …
-  - Stage 1 (répéter N₁ fois) : …
-  - Stage 2 (répéter N₂ fois) : …
-  - Stage 3 (répéter N₃ fois) : …
-  - Tête (GAP / linéaire) → logits (dimension = nb classes)
+
+Le modèle implémenté est un classifieur binaire basé sur une GRU avec pooling global :
+
+- Input : input_ids de forme (batch_size, max_len) + mask de forme (batch_size, max_len).
+
+- Embedding (nn.Embedding) :
+    vocabulaire : 50 000 tokens
+    dimension d’embedding : embed_dim = 200
+    sortie : (batch_size, max_len, 200)
+
+- GRU (nn.GRU) :
+    entrée : 200
+    taille cachée : hidden_size = 256
+    batch_first=True
+    sortie : (batch_size, max_len, 256)
+
+- Global Max Pooling temporel :
+    max sur la dimension max_len
+    sortie : (batch_size, 256)
+
+- Tête de classification (nn.Linear) :
+    Linear(256 → 1)
+    sortie : un logit de forme (batch_size, 1), puis squeeze → (batch_size, )
 
 - **Loss function** :
-  - Multi-classe : CrossEntropyLoss
-  - Multi-label : BCEWithLogitsLoss
-  - (autre, si votre tâche l’impose)
 
-- **Sortie du modèle** : forme = __(batch_size, num_classes)__ (ou __(batch_size, num_attributes)__)
+La tâche étant une classification binaire, la loss utilisée est :
+BCEWithLogitsLoss (logit brut en sortie, puis sigmoid implicitement dans la loss).
 
-- **Nombre total de paramètres** : `_____`
+- **Sortie du modèle** : La sortie est un logit de forme (batch_size, ), interprété via une sigmoid pour obtenir une probabilité de classe positive (sigmoid(logit)>= 0,5)
 
-**M1.** Décrivez l’**architecture** complète et donnez le **nombre total de paramètres**.  
+- **Nombre total de paramètres** : `10 352 001 paramètres`
+
+**M1.** Décrivez l’**architecture** complète et donnez le **nombre total de paramètres** : répondu au dessus
 Expliquez le rôle des **2 hyperparamètres spécifiques au modèle** (ceux imposés par votre sujet).
+
+Les deux hyperparamètres spécifiques demandés dans le sujet sont :
+
+Taille cachée du GRU hidden_size = H : contrôle la capacité du modèle à encoder l’information séquentielle (plus H est grand, plus le modèle peut représenter des patterns complexes, mais avec plus de paramètres et un risque accru de surapprentissage).
+
+Longueur maximale max_len : définit la quantité de texte réellement lue par le modèle après troncature/padding (plus max_len est grand, plus on conserve de contexte, mais le coût de calcul augmente).
 
 
 ### 2.3 Perte initiale & premier batch
 
-- **Loss initiale attendue** (multi-classe) ≈ `-log(1/num_classes)` ; exemple 100 classes → ~4.61
+- **Loss initiale attendue** Loss initiale observée (sur le premier batch, sanity-check) : ~0.69 (valeurs typiques observées entre 0.69 et 0.71 au démarrage).
 - **Observée sur un batch** : `_____`
 - **Vérification** : backward OK, gradients ≠ 0
 
 **M2.** Donnez la **loss initiale** observée et dites si elle est cohérente. Indiquez la forme du batch et la forme de sortie du modèle.
+
+La loss initiale observée (sur le premier batch, sanity-check) : ~0.69.
+
+Oui, c'est cohérent. En classification binaire avec BCEWithLogitsLoss, une prédiction aléatoire (logits proches de 0 ⇒ probabilité ~0.5) donne une loss attendue proche de −log(0.5) ≈ 0.693, ce qui correspond bien à l’observé.
+
+Forme d’un batch :
+- input_ids : (batch_size, max_len) = (128, 256)
+- mask : (128, 256)
+- labels : (128,)
+
+La forme de sortie du modèle est un logit par exemple, (128,) (équivalent à (128,1) puis squeeze).
+
+Vérification backward / gradients : le backward s’exécute correctement (pas d’erreur), et les gradients sont non nuls (sauf cas rares de batch “instable” où la loss devient non-finie et est ignorée par le script).
 
 ---
 
@@ -132,6 +264,28 @@ Expliquez le rôle des **2 hyperparamètres spécifiques au modèle** (ceux impo
 
 **M3.** Donnez la **taille du sous-ensemble**, les **hyperparamètres** du modèle utilisés, et la **courbe train/loss** (capture). Expliquez ce qui prouve l’overfit.
 
+- Sous-ensemble train : N = 256 exemples (mode --overfit_small, paramètre overfit_num_examples: 256)
+
+- Hyperparamètres modèle utilisés :
+    max_len = 256
+    hidden_size = 256 (et embed_dim = 200 fixé)
+
+- Optimisation :
+    LR = 0.001 (config)
+    weight decay = 0.0
+
+- Nombre d’époques : 20 (overfit_epochs: 20)
+
+Graphique TensorBoard train/loss :
+
+![Image 2](./images/Image2.png)
+
+Graphique TensorBoard train/acc :
+
+![Image 3](./images/Image3.png)
+
+L’overfit est démontré par le fait que sur ce très petit sous-ensemble (N=256), la loss d’entraînement chute fortement et l’accuracy train monte vers des valeurs très élevées (souvent proches de 100%). Cela indique que le modèle a suffisamment de capacité et que la boucle d’entraînement (forward/backward/optimiseur) fonctionne correctement : il est capable de mémoriser le petit échantillon.
+
 ---
 
 ## 4) LR finder
@@ -142,30 +296,55 @@ Expliquez le rôle des **2 hyperparamètres spécifiques au modèle** (ceux impo
   - **LR** = `_____`
   - **Weight decay** = `_____` (valeurs classiques : 1e-5, 1e-4)
 
-> _Insérer capture TensorBoard : courbe LR → loss._
+LR loss : 
+
+![Image 6](./images/Image6.png)
 
 **M4.** Justifiez en 2–3 phrases le choix du **LR** et du **weight decay**.
+
+Nous avons réalisé un LR finder en augmentant le learning rate de manière exponentielle entre 1e-5 et 1e-1, sur environ 200 itérations, en enregistrant la loss à chaque pas dans TensorBoard. La loss reste proche de 0.69 (comportement initial quasi-aléatoire), puis commence à diminuer nettement lorsque le LR atteint environ 1e-3, et continue à baisser jusqu’à environ 2e-2. Au-delà, la courbe devient instable (fortes oscillations puis explosion), ce qui indique un LR trop élevé.
+
+Nous retenons donc une fenêtre stable ~1e-3 → 2e-2, et choisissons LR = 1e-3 pour la suite afin d’assurer une convergence stable. Le weight decay a été conservé très faible (0.0) car l’objectif à ce stade est d’obtenir une descente stable de la loss, et le modèle ne présente pas encore de signe clair de sur-apprentissage sur ces runs courts.
 
 ---
 
 ## 5) Mini grid search (rapide)
 
 - **Grilles** :
-  - LR : `{_____ , _____ , _____}`
-  - Weight decay : `{1e-5, 1e-4}`
-  - Hyperparamètre modèle A : `{_____, _____}`
-  - Hyperparamètre modèle B : `{_____, _____}`
 
-- **Durée des runs** : `_____` époques par run (1–5 selon dataset), même seed
+J’ai effectué une mini grid search rapide en faisant varier :
 
-| Run (nom explicite) | LR    | WD     | Hyp-A | Hyp-B | Val metric (nom=_____) | Val loss | Notes |
-|---------------------|-------|--------|-------|-------|-------------------------|----------|-------|
-|                     |       |        |       |       |                         |          |       |
-|                     |       |        |       |       |                         |          |       |
+- LR : {0.0005, 0.001, 0.002}
 
-> _Insérer capture TensorBoard (onglet HParams/Scalars) ou tableau récapitulatif._
+- Hyperparamètre modèle A (hidden_size) : {128, 256, 384}
+
+- Hyperparamètre modèle B (max_len) : {128} (pour ces runs de grid search rapide)
+
+- **Durée des runs** : Durée par run : 1 époque (objectif : comparaison rapide et cohérente), avec seed fixe
+
+La métrique utilisée pour sélectionner les meilleures configurations est : best/val_acc.
+
 
 **M5.** Présentez la **meilleure combinaison** (selon validation) et commentez l’effet des **2 hyperparamètres de modèle** sur les courbes (stabilité, vitesse, overfit).
+
+La meilleure configuration mesurée sur validation est :
+
+- hidden_size = 256
+- max_len = 128
+- lr = 0.002
+- best/val_acc = 0.89632
+
+On le voit sur ce screen de l'onglet Scalars : 
+
+![Image 4](./images/Image4.png)
+
+Et voici l'onglet Hparams : 
+
+![Image 5](./images/Image5.png)
+
+Effet de hidden_size : globalement, hidden_size=128 donne les scores les plus faibles. Les tailles 256 et 384 améliorent la validation, ce qui est cohérent avec une capacité de représentation plus élevée. En revanche, passer de 256 à 384 n’apporte qu’un gain marginal (voire nul ici), ce qui suggère un rendement décroissant du nombre de paramètres pour cette phase courte.
+
+Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systématiquement les performances de validation sur 1 époque dans cette grille. Cependant, lors d’autres essais plus longs, un LR trop élevé peut provoquer des instabilités numériques (nan/inf), ce qui motive ensuite l’utilisation d’un LR plus stable pour les entraînements prolongés.
 
 ---
 

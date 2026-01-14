@@ -54,6 +54,15 @@ def build_vocab_from_hf(hf_train, preprocess, vocab_samples: int, vocab_size: in
 # Dataset Torch (wrap HF Dataset)
 # =========================
 class YelpTorchDataset(Dataset):
+    """
+    Wrap d'un split HuggingFace Yelp Polarity.
+    Retourne (ids, label) où ids est une séquence (non paddée).
+
+    IMPORTANT: certains textes peuvent produire 0 tokens après preprocessing,
+    ce qui entraîne mask=all False au collate et peut provoquer inf/nan dans le modèle
+    (p.ex. masked maxpool). On force donc au moins 1 token (<unk>).
+    """
+
     def __init__(self, hf_ds, preprocess, vocab: Vocab, max_len: int):
         self.ds = hf_ds
         self.preprocess = preprocess
@@ -65,11 +74,18 @@ class YelpTorchDataset(Dataset):
 
     def __getitem__(self, idx: int):
         item = self.ds[idx]
-        tokens = self.preprocess(item["text"])
-        ids = self.vocab.encode(tokens)[: self.max_len]
+        text = item.get("text", "")
         label = int(item["label"])
         if label not in (0, 1):
             raise ValueError(f"Unexpected label value: {label}")
+
+        tokens = self.preprocess(text)
+        ids = self.vocab.encode(tokens)[: self.max_len]
+
+        # ✅ sécurité anti-seq vide (évite mask=all False -> inf/nan downstream)
+        if len(ids) == 0:
+            ids = [self.vocab.unk_idx]
+
         return torch.tensor(ids, dtype=torch.long), torch.tensor(label, dtype=torch.float32)
 
 
@@ -93,6 +109,13 @@ def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_idx: int, max
 
     for i, s in enumerate(seqs):
         s = s[:T]
+        # (par sécurité) si jamais un sample arrive vide malgré le garde-fou
+        if len(s) == 0:
+            # on met un pad/unk au premier token et mask=True
+            x[i, 0] = pad_idx
+            mask[i, 0] = True
+            continue
+
         x[i, : len(s)] = s
         mask[i, : len(s)] = True
 
@@ -202,6 +225,7 @@ def get_dataloaders(config: dict):
         "vocab_size": len(vocab),
         "pad_idx": vocab.pad_idx,
         "max_len": max_len,
+        "vocab_itos": vocab.itos,  # utile pour sanity_dump_tokens
     }
 
     return train_loader, val_loader, test_loader, meta

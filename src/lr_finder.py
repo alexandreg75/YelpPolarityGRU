@@ -2,11 +2,10 @@
 LR finder.
 
 Usage :
-    python -m src.lr_finder --config configs/config.yaml
+    python3 -m src.lr_finder --config configs/config.yaml
 """
 
 import argparse
-import math
 import time
 import yaml
 
@@ -30,17 +29,19 @@ def main():
     print("Device:", device)
 
     train_loader, _, _, meta = get_dataloaders(cfg)
-    cfg.setdefault("model", {})
-    cfg["model"]["vocab_size"] = meta["vocab_size"]
-    cfg["model"]["pad_idx"] = meta["pad_idx"]
+
+    # ✅ IMPORTANT : build_model() attend ces clés dans cfg["dataset"]
+    cfg.setdefault("dataset", {})
+    cfg["dataset"]["vocab_size_effective"] = int(meta["vocab_size"])
+    cfg["dataset"]["pad_idx"] = int(meta["pad_idx"])
 
     model = build_model(cfg).to(device)
     crit = nn.BCEWithLogitsLoss()
 
-    # LR sweep
-    lr_start = 1e-6
-    lr_end = 1.0
-    num_steps = 200  # suffisant pour voir une courbe
+    # LR sweep (plage plus safe)
+    lr_start = 1e-5
+    lr_end = 1e-1
+    num_steps = 200
     gamma = (lr_end / lr_start) ** (1 / max(1, num_steps - 1))
 
     optim = torch.optim.Adam(model.parameters(), lr=lr_start)
@@ -70,6 +71,12 @@ def main():
         optim.zero_grad(set_to_none=True)
         logits = model(x, m).view(-1)
         loss = crit(logits, y)
+
+        # stop si NaN/Inf
+        if not torch.isfinite(loss):
+            print(f"[STOP] Non-finite loss at step={step}, lr={lr:.2e}")
+            break
+
         loss.backward()
         optim.step()
 
@@ -83,7 +90,8 @@ def main():
         step += 1
 
     writer.close()
-    print("LR finder done. Open TensorBoard on runs/ to inspect lr_finder/loss vs lr_finder/lr.")
+    print("✅ LR finder done. Open TensorBoard on runs/ to inspect lr_finder/loss vs lr_finder/lr.")
+
 
 if __name__ == "__main__":
     main()

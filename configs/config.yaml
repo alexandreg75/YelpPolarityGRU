@@ -2,34 +2,29 @@ seed: 42
 
 dataset:
   name: yelp_polarity
-  max_len: 256          # à tester: 128 / 256 / 400
+  max_len: 128
   vocab_size: 50000
   min_freq: 2
   vocab_samples: 200000
 
 model:
   embed_dim: 200
-  hidden_size: 256      # à tester: 128 / 256 / 384
+  hidden_size: 256
 
 train:
   batch_size: 128
-  epochs: 3
-
-  # Étape B: LR stable (0.002 explosait parfois)
-  lr: 0.001
-
+  epochs: 15
+  lr: 0.002
   weight_decay: 0.0
   grad_clip: 1.0
   log_every_steps: 200
-
-  # sécurité anti-explosion (utilisé par train.py)
-  bad_loss_threshold: 50.0
-
-  # Étape A: vérif perte initiale (sanity)
   sanity_steps: 5
 
-  # Étape A: overfit mini-échantillon (gardé, mais tu n'actives que via --overfit_small)
-  overfit_num_examples: 256   # mets 0 pour désactiver
+  # sécurité anti-explosion (si ton train.py l’utilise)
+  bad_loss_threshold: 50.0
+
+  # overfit mode (ne s’active que via --overfit_small)
+  overfit_num_examples: 256
   overfit_epochs: 20
 
 paths:
