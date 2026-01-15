@@ -31,8 +31,8 @@ cluster : python/torch + CUDA (pour run final)
 - **Source** (lien) : https://huggingface.co/datasets/fancyzhx/yelp_polarity
 - **Type d’entrée** (image / texte / audio / séries) : texte en anglais
 - **Tâche** (multiclasses, multi-label, régression) : classification binaire sentiment (pos/neg)
-- **Dimensions d’entrée attendues** (`meta["input_shape"]`) : 
-- **Nombre de classes** (`meta["num_classes"]`) :
+- **Dimensions d’entrée attendues** (`meta["input_shape"]`) :  (256,) car la séquence de tokens est tronquée à une longueur fixe max_len=256
+- **Nombre de classes** (`meta["num_classes"]`) : 2 car classification binaire
 
 **D1.** Quel dataset utilisez-vous ? D’où provient-il et quel est son format (dimensions, type d’entrée) ?
 
@@ -351,19 +351,30 @@ Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systémati
 ## 6) Entraînement complet (10–20 époques, sans scheduler)
 
 - **Configuration finale** :
-  - LR = `_____`
-  - Weight decay = `_____`
-  - Hyperparamètre modèle A = `_____`
-  - Hyperparamètre modèle B = `_____`
-  - Batch size = `_____`
-  - Époques = `_____` (10–20)
-- **Checkpoint** : `artifacts/best.ckpt` (selon meilleure métrique val)
+    LR = 0.001
+    Weight decay = 0.0
+    Hyperparamètre modèle A = max_len = 256 (longueur max des séquences)
+    Hyperparamètre modèle B = hidden_size = 256 (taille de l’état caché du GRU)
+    Batch size = 128
+    Époques = 10 (run arrêté car dégradation en validation)
+
+- **Checkpoint** : `artifacts/best.ckpt` (selon meilleure métrique val : meilleure val_acc atteinte à l'époque 2)
 
 > _Insérer captures TensorBoard :_
 > - `train/loss`, `val/loss`
 > - `val/accuracy` **ou** `val/f1` (classification)
 
+![Image 7](./images/Image7.png)
+
+La loss d’entraînement diminue rapidement, tandis que la loss de validation recommence à augmenter après ~2–3 époques, avec une baisse progressive de la validation accuracy : le modèle atteint sa meilleure généralisation à l’époque 2 (val_acc ≈ 93.86%) puis commence à sur-apprendre.
+
 **M6.** Montrez les **courbes train/val** (loss + métrique). Interprétez : sous-apprentissage / sur-apprentissage / stabilité d’entraînement.
+
+L’entraînement démarre de façon stable : la loss d’entraînement diminue fortement dès les premières époques, et la validation atteint rapidement un bon niveau de performance. La meilleure performance en validation est obtenue très tôt (epoch 2 : val_acc = 93.86%, val_loss ≈ 0.1571), ce qui indique que le modèle apprend efficacement les patterns principaux du dataset.
+
+À partir de l’époque 3, on observe une dégradation progressive des performances en validation : la val_loss augmente régulièrement (≈ 0.166 → 0.277 entre epochs 3 et 10), tandis que la val_accuracy diminue (≈ 93.86% → 88.68%). En parallèle, la loss d’entraînement reste globalement faible, ce qui suggère un sur-apprentissage (overfitting) : le modèle continue à s’ajuster sur les données d’entraînement sans améliorer la généralisation.
+
+Ainsi, l’entraînement est globalement stable (pas de divergence durable) mais montre un overfit marqué après quelques époques, ce qui justifie l’utilisation du checkpoint best.ckpt correspondant au meilleur score validation.
 
 ---
 
@@ -371,11 +382,19 @@ Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systémati
 
 > _Superposez plusieurs runs dans TensorBoard et insérez 2–3 captures :_
 
+![Image 8](./images/Image8.png)
+
 - **Variation du LR** (impact au début d’entraînement)
 - **Variation du weight decay** (écart train/val, régularisation)
 - **Variation des 2 hyperparamètres de modèle** (convergence, plateau, surcapacité)
 
 **M7.** Trois **comparaisons** commentées (une phrase chacune) : LR, weight decay, hyperparamètres modèle — ce que vous attendiez vs. ce que vous observez.
+
+Variation du LR : on s’attendait à ce qu’un LR plus grand converge plus vite mais devienne instable, et on observe effectivement que LR=0.002 apprend plus rapidement et atteint de meilleures performances au début, tandis que LR=0.0005 converge plus lentement (moins bon score validation à durée égale), avec LR=0.001 comme compromis stable.
+
+Variation du weight decay : on s’attendait à ce que le weight decay réduise le sur-apprentissage (écart train/val plus faible), mais dans notre cas on observe que le modèle overfit déjà peu sur les runs courts, donc l’impact du weight decay est faible sur la validation (gain non systématique).
+
+Variation des hyperparamètres modèle (hidden_size et max_len) : on s’attendait à ce que plus de capacité (hidden_size plus grand) améliore la performance mais augmente le risque de surfit, et on observe que hidden_size=256 ou 384 donne de meilleures accuracies validation que 128, avec des gains visibles sur la convergence, tandis que l’augmentation de capacité n’apporte pas toujours un gain proportionnel sur les runs courts.
 
 ---
 
@@ -397,6 +416,15 @@ Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systémati
 
 **M9.** Donnez les **résultats test** et comparez-les à la validation (écart raisonnable ? surapprentissage probable ?).
 
+Le modèle final a été évalué sur le split test à partir du checkpoint artifacts/best.ckpt.
+
+Test loss : 0.2291
+Test accuracy : 90.40%
+
+![Image 9](./images/Image9.png)
+
+La performance test est légèrement inférieure à celle observée sur validation (≈ 93–94%), ce qui est attendu. Cet écart reste raisonnable et suggère un léger sur-apprentissage, mais le modèle généralise globalement correctement sur des données jamais vues.
+
 ---
 
 ## 10) Limites, erreurs & bug diary (court)
@@ -404,6 +432,14 @@ Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systémati
 - **Limites connues** (données, compute, modèle) :
 - **Erreurs rencontrées** (shape mismatch, divergence, NaN…) et **solutions** :
 - **Idées « si plus de temps/compute »** (une phrase) :
+
+Dans ce projet, la principale limite a été liée aux ressources de calcul. L’entraînement complet sur CPU prend beaucoup de temps, ce qui réduit fortement le nombre d’expérimentations possibles (LR finder, grid search, entraînements longs). J’ai essayé de passer sur Google Colab puis sur un cluster SLURM pour utiliser un GPU, mais la mise en place a été difficile (environnement Python incomplet, dépendances manquantes, installation torch impossible), ce qui m’a finalement obligé à continuer une grande partie du travail en CPU.
+
+Au niveau du modèle, l’architecture choisie reste volontairement simple : Embedding → GRU → pooling → couche linéaire, ce qui permet d’obtenir de bons résultats rapidement mais limite le potentiel comparé à des modèles plus récents (par exemple des Transformers). De plus, comme on utilise une tokenisation assez basique avec un vocabulaire limité, certains phénomènes linguistiques (ironie, phrases très longues, contexte implicite) sont probablement mal capturés.
+
+Pendant le développement, plusieurs problèmes techniques ont été rencontrés. Le plus important concernait la construction du split train/validation : à cause d’une erreur dans le split initial, la validation ne contenait parfois qu’une seule classe, ce qui rendait les métriques fausses (accuracy artificiellement à 100%). Ce problème a été corrigé en mettant en place un split stratifié manuel, reproductible grâce à une seed. Ensuite, lors de l’entraînement, j’ai observé plusieurs occurrences de loss qui explose en NaN ou inf, surtout avec un learning rate trop agressif. Pour stabiliser l’apprentissage, j’ai réduit le LR et ajouté un mécanisme de sécurité pour ignorer les batches problématiques (et conserver l’entraînement stable), en plus d’un gradient clipping.
+
+Si j’avais eu plus de temps ou de compute, j’aurais approfondi la régularisation et comparé plusieurs variantes du modèle (GRU bidirectionnel, dropout, plusieurs couches). Une amélioration naturelle aurait aussi été de tester un modèle pré-entraîné type DistilBERT, probablement plus robuste et plus performant sur cette tâche.
 
 ---
 
@@ -413,19 +449,33 @@ Effet de lr : augmenter le LR de 0.0005 → 0.001 → 0.002 améliore systémati
 - **Config utilisée** : joindre un extrait de `configs/config.yaml` (sections pertinentes)
 - **Commandes exactes** :
 
-```bash
-# Exemple (remplacer par vos commandes effectives)
-python -m src.train --config configs/config.yaml --max_epochs 15
-python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.ckpt
-````
+- Seed utilisée : 42
 
-* **Artifacts requis présents** :
+- Configuration utilisée : configs/config.yaml
+(les sections pertinentes sont : dataset, model, train, paths)
 
-  * [ ] `runs/` (runs utiles uniquement)
-  * [ ] `artifacts/best.ckpt`
-  * [ ] `configs/config.yaml` aligné avec la meilleure config
+- Commandes exactes :
 
+# Entraînement complet (15 époques)
+python3 -m src.train --config configs/config.yaml
+
+# Variante : debug court (exécution rapide)
+python3 -m src.train --config configs/config.yaml --max_steps 300
+
+# Overfit sur petit échantillon (sanity-check overfit)
+python3 -m src.train --config configs/config.yaml --overfit_small
+
+# Évaluation finale sur test avec le meilleur checkpoint
+python3 -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.ckpt
+
+
+- Artifacts requis présents :
+    - runs/ (courbes TensorBoard des entraînements et comparaisons)  
+    - artifacts/best.ckpt (meilleur modèle selon validation)
+    - configs/config.yaml (aligné avec la meilleure configuration retenue)
 ---
+
+
 
 ## 12) Références (courtes)
 
@@ -433,4 +483,19 @@ python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.
 * Lien dataset officiel (et/ou HuggingFace/torchvision/torchaudio).
 * Toute ressource externe substantielle (une ligne par référence).
 
+✅ 12) Références (courtes)
 
+Dataset Yelp Polarity (HuggingFace Datasets) — fancyzhx/yelp_polarity
+https://huggingface.co/datasets/fancyzhx/yelp_polarity
+
+Dataset original Yelp Dataset Challenge (2015) — source de construction du dataset
+https://www.yelp.com/dataset
+
+Papier de référence (benchmark initial du dataset)
+Xiang Zhang, Junbo Zhao, Yann LeCun — Character-level Convolutional Networks for Text Classification (NIPS 2015).
+
+PyTorch Documentation (modules utilisés : Embedding, GRU, BCEWithLogitsLoss, DataLoader)
+https://pytorch.org/docs/stable/index.html
+
+TensorBoard (suivi des courbes train/val et hparams)
+https://www.tensorflow.org/tensorboard

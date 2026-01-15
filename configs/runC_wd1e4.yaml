@@ -1,0 +1,33 @@
+seed: 42
+
+dataset:
+  name: yelp_polarity
+  max_len: 128
+  vocab_size: 50000
+  min_freq: 2
+  vocab_samples: 200000
+
+model:
+  embed_dim: 200
+  hidden_size: 256
+
+train:
+  batch_size: 128
+  epochs: 15
+  lr: 0.002
+  weight_decay: 1e-4
+  grad_clip: 1.0
+  log_every_steps: 200
+  sanity_steps: 5
+
+  # sécurité anti-explosion (si ton train.py l’utilise)
+  bad_loss_threshold: 50.0
+
+  # overfit mode (ne s’active que via --overfit_small)
+  overfit_num_examples: 256
+  overfit_epochs: 20
+
+paths:
+  runs_dir: runs
+  artifacts_dir: artifacts
+  best_ckpt_path: artifacts/best.ckpt

@@ -1,0 +1,18 @@
+Device: cpu
+[SANITY] step 1/5 | loss=0.6909 | acc=47.66%
+[SANITY] step 2/5 | loss=0.6896 | acc=53.12%
+[SANITY] step 3/5 | loss=0.6978 | acc=44.53%
+[SANITY] step 4/5 | loss=0.6859 | acc=52.34%
+[SANITY] step 5/5 | loss=0.6934 | acc=49.22%
+Epoch 1/15 | train loss 0.1940 acc 92.09% | val loss 0.1579 acc 93.78%
+✓ Saved best -> artifacts/best.ckpt (val_acc=93.78%)
+Epoch 2/15 | train loss 0.1384 acc 94.60% | val loss 0.1571 acc 93.86%
+✓ Saved best -> artifacts/best.ckpt (val_acc=93.86%)
+Epoch 3/15 | train loss 0.1200 acc 95.41% | val loss 0.1661 acc 93.57%
+Epoch 4/15 | train loss 0.1127 acc 95.71% | val loss 0.1678 acc 93.70%
+Epoch 5/15 | train loss 0.1139 acc 95.66% | val loss 0.1753 acc 93.19%
+Epoch 6/15 | train loss 0.1238 acc 95.23% | val loss 0.1825 acc 93.05%
+Epoch 7/15 | train loss 0.1337 acc 94.83% | val loss 0.1921 acc 92.71%
+Epoch 8/15 | train loss 0.1457 acc 94.30% | val loss 0.2025 acc 92.17%
+Epoch 9/15 | train loss 0.1760 acc 93.05% | val loss 0.2464 acc 90.02%
+Epoch 10/15 | train loss 0.2357 acc 90.58% | val loss 0.2769 acc 88.68%

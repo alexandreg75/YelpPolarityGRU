@@ -1,8 +1,12 @@
 """
-Évaluation.
+Évaluation — Yelp Polarity GRU (Test).
 
-Usage :
+Exécutable via :
     python -m src.evaluate --config configs/config.yaml --checkpoint artifacts/best.ckpt
+
+Exigences minimales :
+- charger le modèle et le checkpoint
+- calculer et afficher les métriques de test (loss + accuracy)
 """
 
 import argparse
@@ -12,43 +16,37 @@ import torch.nn as nn
 
 from src.data_loading import get_dataloaders
 from src.model import build_model
-from src.utils import get_device
+from src.utils import get_device, set_seed
+
+
+def accuracy_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    preds = (torch.sigmoid(logits) >= 0.5).long()
+    return (preds == labels.long()).float().mean().item()
 
 
 @torch.no_grad()
-def eval_loop(model, loader, device):
+def evaluate_split(model, loader, device):
     model.eval()
     crit = nn.BCEWithLogitsLoss()
-    total_loss = 0.0
-    correct = 0
-    total = 0
+
+    loss_sum = 0.0
+    acc_sum = 0.0
+    n = 0
 
     for batch in loader:
-        x = batch.input_ids.to(device)
-        m = batch.mask.to(device)
-        y = batch.labels.to(device)
+        input_ids = batch.input_ids.to(device)
+        mask = batch.mask.to(device)
+        labels = batch.labels.to(device)
 
-        logits = model(x, m).view(-1)
-        loss = crit(logits, y)
+        logits = model(input_ids, mask)
+        loss = crit(logits, labels)
 
-        total_loss += float(loss.item()) * y.numel()
-        preds = (torch.sigmoid(logits) >= 0.5).float()
-        correct += int((preds == y).sum().item())
-        total += int(y.numel())
+        bs = labels.size(0)
+        loss_sum += loss.item() * bs
+        acc_sum += accuracy_from_logits(logits, labels) * bs
+        n += bs
 
-    return total_loss / max(1, total), correct / max(1, total)
-
-
-def load_checkpoint(model, ckpt_path, device):
-    ckpt = torch.load(ckpt_path, map_location=device)
-    # support multiple formats
-    if isinstance(ckpt, dict):
-        for k in ["model", "state_dict", "model_state_dict"]:
-            if k in ckpt:
-                model.load_state_dict(ckpt[k])
-                return
-    # fallback: raw state_dict
-    model.load_state_dict(ckpt)
+    return loss_sum / max(1, n), acc_sum / max(1, n)
 
 
 def main():
@@ -57,20 +55,40 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True)
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
+    # ---- config ----
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    # ---- seed + device ----
+    set_seed(int(cfg.get("seed", 42)))
     device = get_device(cfg.get("train", {}).get("device", "auto"))
     print("Device:", device)
 
+    # ---- dataloaders + meta ----
     train_loader, val_loader, test_loader, meta = get_dataloaders(cfg)
-    cfg.setdefault("model", {})
-    cfg["model"]["vocab_size"] = meta["vocab_size"]
-    cfg["model"]["pad_idx"] = meta["pad_idx"]
 
+    # ✅ IMPORTANT : inject meta info into config (like in train.py)
+    cfg.setdefault("dataset", {})
+    cfg["dataset"]["vocab_size_effective"] = int(meta["vocab_size"])
+    cfg["dataset"]["pad_idx"] = int(meta["pad_idx"])
+
+    # ---- model ----
     model = build_model(cfg).to(device)
-    load_checkpoint(model, args.checkpoint, device)
 
-    test_loss, test_acc = eval_loop(model, test_loader, device)
-    print(f"TEST loss: {test_loss:.4f} | TEST acc: {test_acc*100:.2f}%")
+    # ---- load checkpoint ----
+    ckpt = torch.load(args.checkpoint, map_location=device)
+
+    # ton train.py sauvegarde "model_state"
+    model.load_state_dict(ckpt["model_state"], strict=True)
+
+    # ---- evaluate ----
+    test_loss, test_acc = evaluate_split(model, test_loader, device)
+
+    print("\n===== FINAL TEST RESULTS =====")
+    print(f"Test loss: {test_loss:.4f}")
+    print(f"Test acc : {test_acc*100:.2f}%")
+    print("==============================\n")
+
 
 if __name__ == "__main__":
     main()
